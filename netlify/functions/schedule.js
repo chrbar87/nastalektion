@@ -1,6 +1,7 @@
 const HOST=process.env.SKOLA24_HOST||"nyaskolan.skola24.se";
 const SCHOOL=process.env.SKOLA24_SCHOOL||"Nya Skolan Pettersberg";
 const TEACHER=(process.env.SKOLA24_TEACHER||"chba").toLowerCase();
+const SCHOOL_GUID=process.env.SKOLA24_SCHOOL_GUID||"583628e7-c6a9-f705-8ec5-27821f4b84cf";
 const API="https://web.skola24.se/api";
 const SCOPE="8a22163c-8662-4535-9050-bc5e1923df48";
 
@@ -11,7 +12,7 @@ async function post(path,body){
  return data;
 }
 async function get(path){
- const r=await fetch(path,{headers:{"User-Agent":"Mozilla/5.0","Origin":"https://web.skola24.se","Referer":"https://web.skola24.se/timetable/timetable-viewer/"}});
+ const r=await fetch(path,{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json, text/plain, */*","Referer":"https://web.skola24.se/timetable/timetable-viewer/"}});
  const text=await r.text();let data;try{data=JSON.parse(text)}catch{data=text}
  if(!r.ok) throw new Error(`${path}: HTTP ${r.status} ${typeof data==="string"?data:JSON.stringify(data)}`);
  return data;
@@ -26,11 +27,9 @@ function parseLessons(data){const out=[];walk(unwrap(data),o=>{const s=o.startTi
 
 async function main(){
  const keyR=await post("/get/timetable/render/key",{});const key=unwrap(keyR)?.key;if(!key)throw new Error("Skola24 gav inget renderKey.");
- const units=unwrap(await post("/services/skola24/get/timetable/viewer/units",{getTimetableViewerUnitsRequest:{hostName:HOST}}));
- let schoolGuid=null;
- walk(units,o=>{if(!schoolGuid){const n=String(o.name??o.Name??o.text??o.Text??"").toLowerCase();const g=o.guid??o.Guid??o.id??o.Id;if(typeof g==="string"&&(n.includes(SCHOOL.toLowerCase())||n===SCHOOL.toLowerCase()))schoolGuid=g}});
- if(!schoolGuid){walk(units,o=>{if(!schoolGuid){const g=o.guid??o.Guid;if(typeof g==="string"&&/^[0-9a-f-]{36}$/i.test(g))schoolGuid=g}})}
- if(!schoolGuid)throw new Error("Kunde inte hitta skolans GUID.");
+ // Skola24's public timetable viewer exposes the school GUID in the selection URL.
+ // For this school it is 583628e7-c6a9-f705-8ec5-27821f4b84cf.
+ const schoolGuid=SCHOOL_GUID;
  const encodedSchoolGuid=Buffer.from(schoolGuid).toString("base64").replace(/=+$/,'');
  const selectionUrl=`https://web.skola24.se/timetable/timetable-viewer/data/selection?schoolGuid=${encodeURIComponent(encodedSchoolGuid)}&hostName=${encodeURIComponent(HOST)}`;
  let selection;
@@ -41,13 +40,12 @@ async function main(){
  if(!teacher)throw new Error(`Hittade inte lärarsignaturen "${TEACHER}" i Skola24s lärarlista (${teachers.length} lärare hämtades).`);
  const tid=teacher.guid??teacher.Guid??teacher.id??teacher.Id;if(!tid)throw new Error("Läraren hittades men saknar GUID.");
  const years=unwrap(await post("/get/active/school/years",{getTimetableViewerUnitsRequest:{hostName:HOST},checkSchoolYearsFeatures:false}));let schoolYear=null;walk(years,o=>{if(!schoolYear){const v=o.schoolYear??o.SchoolYear;if(v)schoolYear=v}});if(!schoolYear)throw new Error("Kunde inte identifiera aktivt läsår.");
- let unitGuid=schoolGuid;
  const now=localNow();
  const encR=await post("/encrypt/signature",{signature:tid});const enc=unwrap(encR)?.signature??unwrap(encR)?.Signature??unwrap(encR);if(!enc)throw new Error("Kunde inte kryptera lärarens GUID.");
- const renderR=await post("/render/timetable",{renderKey:key,selection:enc,scheduleDay:wd(now),week:week(now),year:now.getFullYear(),host:HOST,unitGuid,schoolYear,startDate:null,endDate:null,blackAndWhite:false,width:900,height:700,selectionType:4,showHeader:false,periodText:"",privateFreeTextMode:false,privateSelectionMode:null,customerKey:""});
+ const renderR=await post("/render/timetable",{renderKey:key,selection:enc,scheduleDay:wd(now),week:week(now),year:now.getFullYear(),host:HOST,unitGuid:schoolGuid,schoolYear,startDate:null,endDate:null,blackAndWhite:false,width:900,height:700,selectionType:4,showHeader:false,periodText:"",privateFreeTextMode:false,privateSelectionMode:null,customerKey:""});
  const lessons=parseLessons(renderR);const mins=now.getHours()*60+now.getMinutes();
  const current=lessons.find(l=>{const[a,b]=l.start.split(":").map(Number),[c,d]=l.end.split(":").map(Number);return mins>=a*60+b&&mins<c*60+d});
  const next=lessons.find(l=>{const[a,b]=l.start.split(":").map(Number);return a*60+b>mins});
- return {current:current?{end:current.end,subject:current.subject}:null,next:next?{subject:next.subject,start:next.start}:null,updated:now.toLocaleTimeString("sv-SE",{hour:"2-digit",minute:"2-digit"})};
+ return {current:current?{end:current.end,subject:current.subject}:null,next:next?{subject:next.subject,start:next.start}:null,updated:now.toLocaleTimeString("sv-SE",{hour:"2-digit",minute:"2-digit"}),diagnostic:{schoolGuid,teacher:TEACHER,teacherGuid:tid,teacherCount:teachers.length,lessonCount:lessons.length}};
 }
 exports.handler=async()=>{try{return{statusCode:200,headers:{"Content-Type":"application/json","Cache-Control":"no-store","Access-Control-Allow-Origin":"*"},body:JSON.stringify(await main())}}catch(e){return{statusCode:500,headers:{"Content-Type":"application/json","Access-Control-Allow-Origin":"*"},body:JSON.stringify({error:e.message,stack:e.stack})}}};
