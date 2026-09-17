@@ -88,49 +88,51 @@ function parseLessons(data) {
 }
 
 async function main() {
-  // Skola24's public API uses a render key. Axios is used deliberately here;
-  // a known working Skola24 integration reports that this endpoint can fail
-  // with native fetch in some environments.
+  // 1. Render key
   const keyR = await post("/get/timetable/render/key", {});
   const key = unwrap(keyR)?.key;
   if (!key) throw new Error("Skola24 gav inget renderKey.");
 
-  // Get the school's unit GUID from the public viewer units endpoint.
+  // 2. School/unit GUID
   const unitsR = await post("/services/skola24/get/timetable/viewer/units", {
     getTimetableViewerUnitsRequest: { hostName: HOST },
   });
   const units = unwrap(unitsR);
   let unitGuid = SCHOOL_GUID;
 
-  // Prefer the configured GUID, but if the API exposes a matching school/unit,
-  // use that GUID. This keeps the app reusable if the environment is changed.
   walk(units, (o) => {
-    if (!o || unitGuid !== SCHOOL_GUID) return;
     const g = o.guid ?? o.Guid ?? o.unitGuid ?? o.UnitGuid;
-    if (typeof g === "string" && /^[0-9a-f-]{36}$/i.test(g)) {
-      const n = String(o.name ?? o.Name ?? "").toLowerCase();
-      if (n.includes("pettersberg") || n.includes("nya skolan")) unitGuid = g;
-    }
+    if (typeof g !== "string" || !/^[0-9a-f-]{36}$/i.test(g)) return;
+    const n = String(o.name ?? o.Name ?? "").toLowerCase();
+    if (n.includes("pettersberg") || n.includes("nya skolan")) unitGuid = g;
   });
 
+  // 3. Active school year.
+  // Skola24 returns data.activeSchoolYears[0].guid. This is the shape used
+  // by a working public Skola24 integration, so do not search recursively
+  // for a property named "schoolYear" here.
   const yearsR = await post("/get/active/school/years", {
-    getTimetableViewerUnitsRequest: { hostName: HOST },
+    hostName: HOST,
     checkSchoolYearsFeatures: false,
   });
-  let schoolYear = null;
-  walk(unwrap(yearsR), (o) => {
-    if (!schoolYear) schoolYear = o.schoolYear ?? o.SchoolYear;
-  });
-  if (!schoolYear) throw new Error("Kunde inte identifiera aktivt läsår.");
 
-  // IMPORTANT: Skola24's timetable viewer accepts the schema ID directly here.
-  // The user's teacher signature (chba) is therefore encrypted and sent as the
-  // selection value. This avoids the /data/selection endpoint, which returned
-  // Tenant verification failed from Netlify.
+  const activeYears = unwrap(yearsR)?.activeSchoolYears;
+  const schoolYear = Array.isArray(activeYears)
+    ? (activeYears[0]?.guid ?? activeYears[0]?.Guid)
+    : null;
+
+  if (!schoolYear) {
+    throw new Error(
+      `Kunde inte identifiera aktivt läsår. Skola24s svar: ${JSON.stringify(yearsR).slice(0, 1000)}`,
+    );
+  }
+
+  // 4. Encrypt teacher signature.
   const encR = await post("/encrypt/signature", { signature: TEACHER });
   const enc = unwrap(encR)?.signature ?? unwrap(encR)?.Signature;
   if (!enc) throw new Error(`Kunde inte kryptera lärarsignaturen "${TEACHER}".`);
 
+  // 5. Render the teacher timetable.
   const now = localNow();
   const renderR = await post("/render/timetable", {
     renderKey: key,
