@@ -25,9 +25,7 @@ async function post(path, body) {
   }
 }
 
-function unwrap(x) {
-  return x?.data ?? x;
-}
+function unwrap(x) { return x?.data ?? x; }
 
 function week(d) {
   const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -41,18 +39,12 @@ function localNow() {
   return new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Stockholm" }));
 }
 
-function clean(s) {
-  return String(s ?? "").replace(/\s+/g, " ").trim();
-}
-
-function encodeGuid(guid) {
-  return Buffer.from(String(guid)).toString("base64").replace(/=+$/g, "");
-}
+function clean(s) { return String(s ?? "").replace(/\s+/g, " ").trim(); }
+function encodeGuid(guid) { return Buffer.from(String(guid)).toString("base64").replace(/=+$/g, ""); }
 
 function walk(x, fn, seen = new Set()) {
   if (!x || typeof x !== "object" || seen.has(x)) return;
-  seen.add(x);
-  fn(x);
+  seen.add(x); fn(x);
   if (Array.isArray(x)) x.forEach(v => walk(v, fn, seen));
   else Object.values(x).forEach(v => walk(v, fn, seen));
 }
@@ -66,10 +58,8 @@ function numberOf(o, names) {
 }
 
 function timeFromY(y) {
-  // In Skola24's current render, 08:00 is y=29 and 09:00 is y=76.
-  // That gives 47 px per hour.
-  const minutes = Math.round((8 * 60) + ((y - 29) * 60 / 47));
-  const rounded = Math.max(0, Math.min(24 * 60 - 1, minutes));
+  const mins = Math.round(8 * 60 + ((y - 29) * 60 / 47));
+  const rounded = Math.max(0, Math.min(24 * 60 - 1, mins));
   const h = Math.floor(rounded / 60);
   const m = rounded % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
@@ -81,16 +71,12 @@ function minutes(hhmm) {
 }
 
 function dayFromX(x) {
-  // The current five-day render has column centers roughly at these x positions.
   const centers = [72, 222, 361, 503, 651];
   let best = 0;
   let distance = Infinity;
   centers.forEach((c, i) => {
     const d = Math.abs(x - c);
-    if (d < distance) {
-      distance = d;
-      best = i;
-    }
+    if (d < distance) { distance = d; best = i; }
   });
   return best;
 }
@@ -101,18 +87,13 @@ function parseLessonText(texts) {
     .map(t => clean(t.text))
     .filter(Boolean);
 
-  if (!values.length) return { subject: "", className: "" };
+  if (!values.length) return { subject: "", className: "", values: [] };
 
   let subject = values[0];
   let className = "";
 
-  // Normal teacher timetable cells usually contain:
-  // Matematik / Årskurs 9 / Sal 32
-  if (values.length >= 2 && /^Årskurs\b/i.test(values[1])) {
-    className = values[1];
-  }
+  if (values.length >= 2 && /^Årskurs\b/i.test(values[1])) className = values[1];
 
-  // Some compact cells contain everything on one line.
   if (values.length === 1) {
     const compact = values[0].match(/^(.*?)\s+(Årskurs\s+[^\s]+)(?:\s+Sal\s+.*)?$/i);
     if (compact) {
@@ -121,23 +102,21 @@ function parseLessonText(texts) {
     }
   }
 
-  return { subject, className };
+  return { subject, className, values };
 }
 
-function parseLessons(renderR, now) {
+function parseLessons(renderR) {
   const data = unwrap(renderR) || {};
   const textList = Array.isArray(data.textList) ? data.textList : [];
   const boxList = Array.isArray(data.boxList) ? data.boxList : [];
-
-  // Each Lesson text object points at its containing lesson box through parentId.
   const textByParent = new Map();
+
   for (const t of textList) {
     if (t?.type !== "Lesson" || t?.parentId == null) continue;
     if (!textByParent.has(t.parentId)) textByParent.set(t.parentId, []);
     textByParent.get(t.parentId).push(t);
   }
 
-  const boxes = boxList.filter(b => b && (b.type === "Lesson" || b.type === "LessonBox" || b.parentId != null));
   const out = [];
 
   for (const [parentId, texts] of textByParent) {
@@ -153,21 +132,12 @@ function parseLessons(renderR, now) {
     const end = timeFromY(y + height);
     if (minutes(end) <= minutes(start)) continue;
 
-    const { subject, className } = parseLessonText(texts);
-    if (!subject || /^(Lunch|Uppdragstid)$/i.test(subject)) continue;
+    const parsed = parseLessonText(texts);
+    if (!parsed.subject || /^(Lunch|Uppdragstid)$/i.test(parsed.subject)) continue;
 
-    out.push({
-      day: dayFromX(x),
-      start,
-      end,
-      subject,
-      className,
-      x,
-      y
-    });
+    out.push({ day: dayFromX(x), start, end, subject: parsed.subject, className: parsed.className, x, y });
   }
 
-  // Fallback: if boxList uses a slightly different shape, try lessonInfo.
   walk(data, o => {
     if (!o || typeof o !== "object") return;
     const start = o.startTime ?? o.StartTime;
@@ -183,20 +153,17 @@ function parseLessons(renderR, now) {
       end: `${b[1].padStart(2, "0")}:${b[2]}`,
       subject: clean(subject),
       className: clean(o.className ?? o.group ?? o.groupName ?? ""),
-      x: 0,
-      y: 0
+      x: 0, y: 0
     });
   });
 
   const seen = new Set();
-  return out
-    .filter(l => {
-      const key = `${l.day}|${l.start}|${l.end}|${l.subject}|${l.className}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
+  return out.filter(l => {
+    const key = `${l.day}|${l.start}|${l.end}|${l.subject}|${l.className}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
 }
 
 async function main() {
@@ -209,7 +176,6 @@ async function main() {
   const now = localNow();
   const today = now.getDay() === 0 ? 6 : now.getDay() - 1;
 
-  // This body mirrors the request captured from the live Skola24 viewer.
   const renderBody = {
     blackAndWhite: false,
     customerKey: "",
@@ -234,36 +200,22 @@ async function main() {
   };
 
   const renderR = await post("/render/timetable", renderBody);
-  const lessons = parseLessons(renderR, now);
+  const lessons = parseLessons(renderR);
   const todayLessons = lessons.filter(l => l.day === today).sort((a, b) => a.start.localeCompare(b.start));
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
   const current = todayLessons.find(l => {
-    const s = minutes(l.start);
-    const e = minutes(l.end);
+    const s = minutes(l.start), e = minutes(l.end);
     return s != null && e != null && nowMinutes >= s && nowMinutes < e;
   });
 
-  // The next lesson should belong to the class Christopher is currently teaching.
-  // If no lesson is active, fall back to the teacher's next lesson today.
   let next = null;
-  if (current?.className) {
-    next = todayLessons.find(l => minutes(l.start) > nowMinutes && l.className === current.className);
-  }
-  if (!next) {
-    next = todayLessons.find(l => minutes(l.start) > nowMinutes);
-  }
+  if (current?.className) next = todayLessons.find(l => minutes(l.start) > nowMinutes && l.className === current.className);
+  if (!next) next = todayLessons.find(l => minutes(l.start) > nowMinutes);
 
   return {
-    current: current ? {
-      end: current.end,
-      subject: current.subject,
-      className: current.className
-    } : null,
-    next: next ? {
-      subject: next.subject,
-      start: next.start
-    } : null,
+    current: current ? { end: current.end, subject: current.subject, className: current.className } : null,
+    next: next ? { subject: next.subject, start: next.start } : null,
     updated: now.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" }),
     diagnostic: {
       teacher: TEACHER,
@@ -273,7 +225,8 @@ async function main() {
       selectionType: 7,
       totalLessons: lessons.length,
       todayLessons: todayLessons.length,
-      currentClass: current?.className || null
+      currentClass: current?.className || null,
+      todayLessonsDetail: todayLessons.map(l => ({ start: l.start, end: l.end, subject: l.subject, className: l.className }))
     }
   };
 }
@@ -282,20 +235,13 @@ exports.handler = async () => {
   try {
     return {
       statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*"
-      },
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify(await main())
     };
   } catch (e) {
     return {
       statusCode: 500,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
-      },
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ error: e.message, stack: e.stack })
     };
   }
