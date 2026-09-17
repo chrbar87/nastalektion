@@ -3,8 +3,11 @@ const axios = require("axios");
 const HOST = process.env.SKOLA24_HOST || "nyaskolan.skola24.se";
 const TEACHER = (process.env.SKOLA24_TEACHER || "chba").trim().toLowerCase();
 const SCHOOL_GUID = process.env.SKOLA24_SCHOOL_GUID || "583628e7-c6a9-f705-8ec5-27821f4b84cf";
+const SCHOOL_YEAR = process.env.SKOLA24_SCHOOL_YEAR || "9c24264e-fe91-47c3-a223-8d1467506772";
+// Confirmed from the live Skola24 viewer request for teacher chba.
+const SCHEMA_ID = process.env.SKOLA24_SCHEMA_ID || "7589e35f-75c2-fa1e-a309-52f01c270561";
+const UNIT_GUID = process.env.SKOLA24_UNIT_GUID || "1a00a81e-e3bc-ff24-8f17-478715901211";
 const API = "https://web.skola24.se/api";
-const WEB = "https://web.skola24.se";
 const SCOPE = "8a22163c-8662-4535-9050-bc5e1923df48";
 const headers = {
   "Content-Type": "application/json",
@@ -17,18 +20,6 @@ const headers = {
 async function post(path, body) {
   try {
     const r = await axios.post(API + path, body, { headers });
-    return r.data;
-  } catch (e) {
-    throw new Error(`${path}: HTTP ${e.response?.status || "?"} ${typeof e.response?.data === "string" ? e.response.data : JSON.stringify(e.response?.data || e.message)}`);
-  }
-}
-
-async function get(path, params) {
-  try {
-    // The timetable-viewer selection endpoint is NOT under /api.
-    // Calling it through /api/../ can trigger Skola24's tenant verification.
-    const base = path.startsWith("/timetable/") ? WEB : API;
-    const r = await axios.get(base + path, { params, headers });
     return r.data;
   } catch (e) {
     throw new Error(`${path}: HTTP ${e.response?.status || "?"} ${typeof e.response?.data === "string" ? e.response.data : JSON.stringify(e.response?.data || e.message)}`);
@@ -49,9 +40,9 @@ function week(d) {
   const y = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
   return Math.ceil((((x - y) / 86400000) + 1) / 7);
 }
-function wd(d) { return d.getDay() === 0 ? 7 : d.getDay(); }
 function localNow() { return new Date(new Date().toLocaleString("en-US", { timeZone: "Europe/Stockholm" })); }
 function clean(s) { return String(s ?? "").replace(/\s+/g, " ").trim(); }
+function encodeGuid(guid) { return Buffer.from(String(guid)).toString("base64").replace(/=+$/g, ""); }
 
 function parseLessons(data) {
   const out = [];
@@ -73,71 +64,42 @@ async function main() {
   const key = unwrap(keyR)?.key;
   if (!key) throw new Error("Skola24 gav inget renderKey.");
 
-  let selectionR = null;
-  let teacherRecord = null;
-  try {
-    selectionR = await get("/timetable/timetable-viewer/data/selection", {
-      schoolGuid: SCHOOL_GUID,
-      hostName: HOST
-    });
-    const data = unwrap(selectionR);
-    const teachers = data?.teachers || data?.Teachers || [];
-    teacherRecord = teachers.find(t => String(t.signature ?? t.Signature ?? "").trim().toLowerCase() === TEACHER) || null;
-  } catch (e) {
-    selectionR = { selectionLookupError: e.message };
-  }
-
-  const yearsR = await post("/get/active/school/years", {
-    getTimetableViewerUnitsRequest: { hostName: HOST },
-    checkSchoolYearsFeatures: false
-  });
-  const yearData = unwrap(yearsR);
-  const activeYears = yearData?.activeSchoolYears || yearData?.ActiveSchoolYears || [];
-  let schoolYear = activeYears[0]?.guid || activeYears[0]?.Guid || activeYears[0]?.schoolYear || activeYears[0]?.SchoolYear || null;
-
-  const unitsR = await post("/services/skola24/get/timetable/viewer/units", {
-    getTimetableViewerUnitsRequest: { hostName: HOST }
-  });
-  let unitGuid = SCHOOL_GUID;
-  walk(unwrap(unitsR), o => {
-    const g = o.guid ?? o.Guid ?? o.unitGuid ?? o.UnitGuid;
-    const n = String(o.name ?? o.Name ?? "").toLowerCase();
-    if (typeof g === "string" && /^[0-9a-f-]{36}$/i.test(g) && (n.includes("pettersberg") || n.includes("nya skolan"))) unitGuid = g;
-    if (!schoolYear) schoolYear = o.schoolYear ?? o.SchoolYear ?? o.schoolYearGuid ?? o.SchoolYearGuid ?? null;
-  });
-
-  const schemaId = teacherRecord?.guid || teacherRecord?.Guid || TEACHER;
-  const encR = await post("/encrypt/signature", { signature: schemaId });
-  const enc = unwrap(encR)?.signature ?? unwrap(encR)?.Signature;
-  if (!enc) throw new Error(`Kunde inte kryptera schema-ID för läraren "${TEACHER}".`);
-  if (!schoolYear) throw new Error(`Kunde inte identifiera aktivt läsår. Skola24-svar: ${JSON.stringify(yearsR).slice(0,2000)}`);
-
+  // The live viewer request confirmed that selection is the base64-encoded
+  // teacher schema GUID. No call to the blocked /data/selection endpoint is needed.
+  const selection = process.env.SKOLA24_SELECTION || encodeGuid(SCHEMA_ID);
+  const unitGuid = process.env.SKOLA24_UNIT_GUID_ENCODED || encodeGuid(UNIT_GUID);
+  const schoolYear = SCHOOL_YEAR;
   const now = localNow();
+
+  // Match the payload captured from the current Skola24 web viewer.
   const renderBody = {
-    renderKey: String(key),
-    selection: String(enc),
-    scheduleDay: wd(now),
-    week: week(now),
-    year: now.getFullYear(),
-    host: HOST,
-    unitGuid,
-    schoolYear,
-    startDate: null,
-    endDate: null,
     blackAndWhite: false,
-    width: 125,
+    customerKey: "",
+    endDate: null,
     height: 550,
-    selectionType: 4,
-    showHeader: false,
+    host: HOST,
     periodText: "",
-    privateFreeTextMode: false,
-    privateSelectionMode: null,
-    customerKey: ""
+    personalTimetable: false,
+    privateFreeTextMode: null,
+    privateSelectionMode: false,
+    renderKey: String(key),
+    scheduleDay: 0,
+    schoolYear,
+    selection,
+    selectionType: 7,
+    showHeader: false,
+    startDate: null,
+    unitGuid,
+    week: week(now),
+    width: 813,
+    year: now.getFullYear()
   };
 
   const renderR = await post("/render/timetable", renderBody);
   const lessons = parseLessons(renderR);
-  if (!lessons.length) throw new Error(`Skola24 returnerade inget tolkbart lektionsschema. Render-svar: ${JSON.stringify(renderR).slice(0,5000)}`);
+  if (!lessons.length) {
+    throw new Error(`Skola24 accepterade schemavalet men inget lektionsschema kunde tolkas. Render-svar: ${JSON.stringify(renderR).slice(0,8000)}`);
+  }
 
   const mins = now.getHours() * 60 + now.getMinutes();
   const current = lessons.find(l => {
@@ -145,25 +107,41 @@ async function main() {
     return mins >= a*60+b && mins < c*60+d;
   });
   const next = lessons.find(l => { const [a,b] = l.start.split(":").map(Number); return a*60+b > mins; });
+
   return {
     current: current ? { end: current.end, subject: current.subject } : null,
     next: next ? { subject: next.subject, start: next.start } : null,
     updated: now.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" }),
-    diagnostic: { teacher: TEACHER, teacherFound: !!teacherRecord, teacherGuid: teacherRecord?.guid || null, unitGuid, schoolYear, lessonCount: lessons.length }
+    diagnostic: {
+      teacher: TEACHER,
+      schemaId: SCHEMA_ID,
+      unitGuid,
+      schoolYear,
+      selectionType: 7,
+      lessonCount: lessons.length
+    }
   };
 }
 
 exports.handler = async (event) => {
   try {
-    if (event?.queryStringParameters?.debug === "1") {
-      const r = await get("/timetable/timetable-viewer/data/selection", { schoolGuid: SCHOOL_GUID, hostName: HOST });
-      const data = unwrap(r);
-      const teachers = data?.teachers || data?.Teachers || [];
-      const match = teachers.find(t => String(t.signature ?? t.Signature ?? "").trim().toLowerCase() === TEACHER);
-      return { statusCode: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ ok: true, teacherFound: !!match, teacher: match ? { guid: match.guid, signature: match.signature, firstName: match.firstName, lastName: match.lastName } : null, topLevelKeys: Object.keys(data || {}) }) };
-    }
-    return { statusCode: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }, body: JSON.stringify(await main()) };
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*"
+      },
+      body: JSON.stringify(await main())
+    };
   } catch (e) {
-    return { statusCode: 500, headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ error: e.message, stack: e.stack }) };
+    return {
+      statusCode: 500,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      },
+      body: JSON.stringify({ error: e.message, stack: e.stack })
+    };
   }
 };
