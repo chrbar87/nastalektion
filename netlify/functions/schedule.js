@@ -7,6 +7,7 @@ const SCHEMA_ID = process.env.SKOLA24_SCHEMA_ID || "7589e35f-75c2-fa1e-a309-52f0
 const UNIT_GUID = process.env.SKOLA24_UNIT_GUID || "1a00a81e-e3bc-ff24-8f17-478715901211";
 const API = "https://web.skola24.se/api";
 const SCOPE = "8a22163c-8662-4535-9050-bc5e1923df48";
+const PARSER_VERSION = "v3-box-diagnostics";
 
 const headers = {
   "Content-Type": "application/json",
@@ -91,7 +92,6 @@ function parseLessonText(texts) {
 
   let subject = values[0];
   let className = "";
-
   if (values.length >= 2 && /^Årskurs\b/i.test(values[1])) className = values[1];
 
   if (values.length === 1) {
@@ -110,6 +110,7 @@ function parseLessons(renderR) {
   const textList = Array.isArray(data.textList) ? data.textList : [];
   const boxList = Array.isArray(data.boxList) ? data.boxList : [];
   const textByParent = new Map();
+  const diagnosticBoxes = [];
 
   for (const t of textList) {
     if (t?.type !== "Lesson" || t?.parentId == null) continue;
@@ -128,11 +129,22 @@ function parseLessons(renderR) {
     const x = numberOf(box, ["x", "left", "X"]);
     if (y == null || height == null || x == null || height <= 0) continue;
 
+    const parsed = parseLessonText(texts);
     const start = timeFromY(y);
     const end = timeFromY(y + height);
-    if (minutes(end) <= minutes(start)) continue;
+    const values = parsed.values;
 
-    const parsed = parseLessonText(texts);
+    diagnosticBoxes.push({
+      parentId,
+      x: Math.round(x * 100) / 100,
+      y: Math.round(y * 100) / 100,
+      height: Math.round(height * 100) / 100,
+      start,
+      end,
+      values
+    });
+
+    if (minutes(end) <= minutes(start)) continue;
     if (!parsed.subject || /^(Lunch|Uppdragstid)$/i.test(parsed.subject)) continue;
 
     out.push({ day: dayFromX(x), start, end, subject: parsed.subject, className: parsed.className, x, y });
@@ -158,12 +170,14 @@ function parseLessons(renderR) {
   });
 
   const seen = new Set();
-  return out.filter(l => {
+  const lessons = out.filter(l => {
     const key = `${l.day}|${l.start}|${l.end}|${l.subject}|${l.className}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   }).sort((a, b) => a.day - b.day || a.start.localeCompare(b.start));
+
+  return { lessons, diagnosticBoxes };
 }
 
 async function main() {
@@ -200,7 +214,8 @@ async function main() {
   };
 
   const renderR = await post("/render/timetable", renderBody);
-  const lessons = parseLessons(renderR);
+  const parsed = parseLessons(renderR);
+  const lessons = parsed.lessons;
   const todayLessons = lessons.filter(l => l.day === today).sort((a, b) => a.start.localeCompare(b.start));
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
@@ -218,6 +233,7 @@ async function main() {
     next: next ? { subject: next.subject, start: next.start } : null,
     updated: now.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" }),
     diagnostic: {
+      parserVersion: PARSER_VERSION,
       teacher: TEACHER,
       schemaId: SCHEMA_ID,
       unitGuid,
@@ -226,7 +242,8 @@ async function main() {
       totalLessons: lessons.length,
       todayLessons: todayLessons.length,
       currentClass: current?.className || null,
-      todayLessonsDetail: todayLessons.map(l => ({ start: l.start, end: l.end, subject: l.subject, className: l.className }))
+      todayLessonsDetail: todayLessons.map(l => ({ start: l.start, end: l.end, subject: l.subject, className: l.className })),
+      lessonBoxesToday: parsed.diagnosticBoxes.filter(b => dayFromX(b.x) === today)
     }
   };
 }
