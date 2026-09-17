@@ -4,8 +4,15 @@ const HOST = process.env.SKOLA24_HOST || "nyaskolan.skola24.se";
 const TEACHER = (process.env.SKOLA24_TEACHER || "chba").trim().toLowerCase();
 const SCHOOL_GUID = process.env.SKOLA24_SCHOOL_GUID || "583628e7-c6a9-f705-8ec5-27821f4b84cf";
 const API = "https://web.skola24.se/api";
+const WEB = "https://web.skola24.se";
 const SCOPE = "8a22163c-8662-4535-9050-bc5e1923df48";
-const headers = { "Content-Type": "application/json", "X-Scope": SCOPE };
+const headers = {
+  "Content-Type": "application/json",
+  "X-Scope": SCOPE,
+  "Accept": "application/json, text/plain, */*",
+  "Referer": `https://web.skola24.se/timetable/timetable-viewer/${HOST}/Nya%20Skolan%20Pettersberg/`,
+  "Origin": "https://web.skola24.se"
+};
 
 async function post(path, body) {
   try {
@@ -18,7 +25,10 @@ async function post(path, body) {
 
 async function get(path, params) {
   try {
-    const r = await axios.get(API + path, { params, headers });
+    // The timetable-viewer selection endpoint is NOT under /api.
+    // Calling it through /api/../ can trigger Skola24's tenant verification.
+    const base = path.startsWith("/timetable/") ? WEB : API;
+    const r = await axios.get(base + path, { params, headers });
     return r.data;
   } catch (e) {
     throw new Error(`${path}: HTTP ${e.response?.status || "?"} ${typeof e.response?.data === "string" ? e.response.data : JSON.stringify(e.response?.data || e.message)}`);
@@ -63,12 +73,10 @@ async function main() {
   const key = unwrap(keyR)?.key;
   if (!key) throw new Error("Skola24 gav inget renderKey.");
 
-  // Fetch the actual selection list used by the timetable viewer. The render API
-  // expects the encrypted GUID/schema ID, not the plain teacher signature.
   let selectionR = null;
   let teacherRecord = null;
   try {
-    selectionR = await get("/../timetable/timetable-viewer/data/selection", {
+    selectionR = await get("/timetable/timetable-viewer/data/selection", {
       schoolGuid: SCHOOL_GUID,
       hostName: HOST
     });
@@ -98,8 +106,6 @@ async function main() {
     if (!schoolYear) schoolYear = o.schoolYear ?? o.SchoolYear ?? o.schoolYearGuid ?? o.SchoolYearGuid ?? null;
   });
 
-  // The current Skola24 viewer can expose the teacher GUID as the schema ID.
-  // Fall back to the configured signature only if the lookup is unavailable.
   const schemaId = teacherRecord?.guid || teacherRecord?.Guid || TEACHER;
   const encR = await post("/encrypt/signature", { signature: schemaId });
   const enc = unwrap(encR)?.signature ?? unwrap(encR)?.Signature;
@@ -149,13 +155,12 @@ async function main() {
 
 exports.handler = async (event) => {
   try {
-    // Temporary diagnostic mode: lets us inspect the selection endpoint without
-    // exposing the complete teacher list publicly.
     if (event?.queryStringParameters?.debug === "1") {
-      const r = await get("/../timetable/timetable-viewer/data/selection", { schoolGuid: SCHOOL_GUID, hostName: HOST });
-      const teachers = unwrap(r)?.teachers || [];
-      const match = teachers.find(t => String(t.signature ?? "").trim().toLowerCase() === TEACHER);
-      return { statusCode: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ ok: true, teacherFound: !!match, teacher: match ? { guid: match.guid, signature: match.signature, firstName: match.firstName, lastName: match.lastName } : null, topLevelKeys: Object.keys(unwrap(r) || {}) }) };
+      const r = await get("/timetable/timetable-viewer/data/selection", { schoolGuid: SCHOOL_GUID, hostName: HOST });
+      const data = unwrap(r);
+      const teachers = data?.teachers || data?.Teachers || [];
+      const match = teachers.find(t => String(t.signature ?? t.Signature ?? "").trim().toLowerCase() === TEACHER);
+      return { statusCode: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ ok: true, teacherFound: !!match, teacher: match ? { guid: match.guid, signature: match.signature, firstName: match.firstName, lastName: match.lastName } : null, topLevelKeys: Object.keys(data || {}) }) };
     }
     return { statusCode: 200, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*" }, body: JSON.stringify(await main()) };
   } catch (e) {
