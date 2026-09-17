@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nästa lektion</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}
+body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111}
+main{height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:4vw}
+.row{width:100%;max-width:1100px;text-align:center}.label{font-size:clamp(22px,4vw,54px);font-weight:700}
+.value{font-size:clamp(36px,7vw,92px);font-weight:800;margin-top:.12em}.next{margin-top:clamp(28px,5vw,60px)}
+.muted{color:#666}.status{position:fixed;bottom:7px;right:9px;font-size:11px;color:#aaa}
+#error{display:none;max-width:1000px;text-align:center;font-size:clamp(18px,3vw,32px);color:#a00;margin-top:20px}
+</style></head>
+<body>
+<main>
+<section class="row"><div class="label">Slutar:</div><div id="end" class="value muted">–</div></section>
+<section class="row next"><div class="label">Nästa lektion:</div><div id="next" class="value muted">Laddar…</div></section>
+<div id="error"></div>
+</main>
+<div id="status" class="status"></div>
+<script>
+const REFRESH_MS=60000;
+async function refresh(){
+ try{
+  const r=await fetch(`/.netlify/functions/schedule?t=${Date.now()}`,{cache:"no-store"});
+  const d=await r.json();
+  if(!r.ok) throw new Error(d.error||"Okänt fel");
+  document.querySelector("#end").textContent=d.current?.end||"–";
+  document.querySelector("#next").textContent=d.next?`${d.next.subject} – ${d.next.start}`:"–";
+  document.querySelector("#status").textContent=d.updated?`Uppdaterad ${d.updated}`:"";
+  document.querySelector("#error").style.display="none";
+ }catch(e){
+  document.querySelector("#error").textContent=e.message;
+  document.querySelector("#error").style.display="block";
+  document.querySelector("#next").textContent="Kunde inte hämta schema";
+ }
+}
+refresh();setInterval(refresh,REFRESH_MS);
+</script></body></html>
